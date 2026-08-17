@@ -4,6 +4,12 @@
   "description": "Team access for the DeepSeek Harness (dsh) web UI: login wall + full HTTP/WebSocket reverse proxy. Zero dependencies.",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/frozo-ai/dsh-teams.git"
+  },
+  "homepage": "https://github.com/frozo-ai/dsh-teams#readme",
+  "bugs": "https://github.com/frozo-ai/dsh-teams/issues",
   "bin": {
     "dsh-teams": "bin/dsh-teams.mjs"
   },
