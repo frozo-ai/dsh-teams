@@ -1,0 +1,31 @@
+{
+  "name": "dsh-teams",
+  "version": "0.1.0",
+  "description": "Team access for the DeepSeek Harness (dsh) web UI: login wall + full HTTP/WebSocket reverse proxy. Zero dependencies.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "dsh-teams": "bin/dsh-teams.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
+    "auth",
+    "teams",
+    "multi-user",
+    "reverse-proxy"
+  ],
+  "scripts": {
+    "start": "node bin/dsh-teams.mjs start",
+    "test": "node test/smoke.mjs"
+  }
+}
