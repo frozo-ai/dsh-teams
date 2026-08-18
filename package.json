@@ -1,6 +1,6 @@
 {
   "name": "dsh-teams",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Team access for the DeepSeek Harness (dsh) web UI: login wall + full HTTP/WebSocket reverse proxy. Zero dependencies.",
   "type": "module",
   "license": "MIT",

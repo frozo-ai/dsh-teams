@@ -99,7 +99,32 @@ export function startGateway(config) {
     for (const [key, value] of Object.entries(req.headers)) {
       if (!HOP_BY_HOP.has(key)) headers[key] = value
     }
+    // dsh's API rejects ANY cross-origin-looking request with 403 -- it assumes
+    // loopback-only access, where browsers omit Origin on same-origin calls.
+    // Behind a proxy the browser starts sending Origin (and Referer), and every
+    // /api call 403s while static assets still load, so the UI half-renders.
+    // We are the loopback client from dsh's perspective, so present as one:
+    // strip the browser's Origin/Referer and rewrite Host to the upstream.
+    delete headers.origin
+    delete headers.referer
+    headers.host = `${upstreamHost}:${upstreamPort}`
+    headers['x-forwarded-host'] = req.headers.host ?? ''
+    headers['x-forwarded-proto'] = 'https'
     headers['x-dsh-teams-user'] = user // ready for future per-user routing/audit
+    return headers
+  }
+
+  /**
+   * Hop-by-hop headers must be stripped on the RESPONSE too, not just the
+   * request. Forwarding upstream's `Transfer-Encoding: chunked` while node
+   * applies its own chunked framing double-encodes the body, which truncates
+   * CSS/JS and renders the page partially styled.
+   */
+  function downstreamHeaders(upstreamRes) {
+    const headers = {}
+    for (const [key, value] of Object.entries(upstreamRes.headers)) {
+      if (!HOP_BY_HOP.has(key.toLowerCase())) headers[key] = value
+    }
     return headers
   }
 
@@ -111,7 +136,7 @@ export function startGateway(config) {
       path: req.url,
       headers: upstreamHeaders(req, user),
     }, (upstreamRes) => {
-      res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers)
+      res.writeHead(upstreamRes.statusCode ?? 502, downstreamHeaders(upstreamRes))
       upstreamRes.pipe(res)
     })
     upstream.on('error', () => {

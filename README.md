@@ -41,6 +41,15 @@ dsh-teams list-users
 
 Env: `DSH_TEAMS_PORT`, `DSH_TEAMS_HOST`, `DSH_UPSTREAM_HOST`, `DSH_UPSTREAM_PORT`, `DSH_TEAMS_HOME` (default `~/.dsh-teams`).
 
+## Why it strips `Origin`
+
+dsh's API returns **403 to any request carrying an `Origin` header** — it assumes
+loopback-only access, where browsers omit `Origin` on same-origin requests. Put
+any proxy in front and the browser starts sending it, so every `/api` call 403s
+while static assets still load, and the UI half-renders (missing composer,
+unstyled text). The gateway therefore strips `Origin`/`Referer` and rewrites
+`Host` to the upstream, preserving the original as `x-forwarded-host`.
+
 ## Security notes
 
 - Run behind TLS (Caddy/nginx/Cloudflare Tunnel) for anything beyond a trusted LAN — cookies are not `Secure` over plain HTTP.
