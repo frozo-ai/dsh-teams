@@ -41,6 +41,35 @@ dsh-teams list-users
 
 Env: `DSH_TEAMS_PORT`, `DSH_TEAMS_HOST`, `DSH_UPSTREAM_HOST`, `DSH_UPSTREAM_PORT`, `DSH_TEAMS_HOME` (default `~/.dsh-teams`).
 
+## SSO (OIDC)
+
+Sign in with Google Workspace, Okta, Azure AD, Auth0 — anything speaking OIDC.
+Authorization Code + **PKCE**, with full ID-token verification: RS256 signature
+against the issuer's JWKS, plus `iss` / `aud` / `exp` / `nonce`. `state` is
+single-use and expires in 10 minutes.
+
+```sh
+export DSH_TEAMS_OIDC_ISSUER=https://accounts.google.com
+export DSH_TEAMS_OIDC_CLIENT_ID=xxx.apps.googleusercontent.com
+export DSH_TEAMS_OIDC_CLIENT_SECRET=xxx          # omit for public clients
+export DSH_TEAMS_OIDC_REDIRECT_URI=https://your.host/__teams/sso/callback
+export DSH_TEAMS_OIDC_ALLOWED_DOMAINS=corp.example
+export DSH_TEAMS_OIDC_LABEL=Google
+dsh-teams start
+```
+
+**It refuses to start without an allowlist.** `ALLOWED_DOMAINS` or
+`ALLOWED_EMAILS` is mandatory: with a public issuer like Google, no allowlist
+means *any Google account on earth* could sign in. Failing closed is deliberate.
+
+Password login keeps working alongside SSO, so you can keep a break-glass local
+account.
+
+Verified against a test IdP signing real RS256 tokens. The suite rejects:
+tampered payloads, wrong-key signatures, issuer/audience mismatch, expired
+tokens, nonce replay, `alg=none` downgrade, unverified emails, non-allowlisted
+domains, forged `state`, and `state` replay.
+
 ## Why it strips `Origin`
 
 dsh's API returns **403 to any request carrying an `Origin` header** — it assumes

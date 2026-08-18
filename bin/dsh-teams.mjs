@@ -36,11 +36,30 @@ switch (command) {
     const host = process.env.DSH_TEAMS_HOST ?? '0.0.0.0'
     const upstreamPort = Number(process.env.DSH_UPSTREAM_PORT ?? 3080)
     const upstreamHost = process.env.DSH_UPSTREAM_HOST ?? '127.0.0.1'
-    if (users.list().length === 0) {
-      console.error('No users yet. Create one first: dsh-teams add-user <name>')
+    if (users.list().length === 0 && !process.env.DSH_TEAMS_OIDC_ISSUER) {
+      console.error('No users yet. Create one first: dsh-teams add-user <name>  (or configure SSO)')
       process.exit(1)
     }
-    await startGateway({ port, host, upstreamHost, upstreamPort, usersPath: USERS_PATH, secret: loadSecret() })
+    const oidc = process.env.DSH_TEAMS_OIDC_ISSUER ? {
+      issuer: process.env.DSH_TEAMS_OIDC_ISSUER,
+      clientId: process.env.DSH_TEAMS_OIDC_CLIENT_ID,
+      clientSecret: process.env.DSH_TEAMS_OIDC_CLIENT_SECRET,
+      redirectUri: process.env.DSH_TEAMS_OIDC_REDIRECT_URI,
+      allowedDomains: (process.env.DSH_TEAMS_OIDC_ALLOWED_DOMAINS ?? '').split(',').map(s => s.trim()).filter(Boolean),
+      allowedEmails: (process.env.DSH_TEAMS_OIDC_ALLOWED_EMAILS ?? '').split(',').map(s => s.trim()).filter(Boolean),
+      label: process.env.DSH_TEAMS_OIDC_LABEL,
+    } : undefined
+    if (oidc) {
+      for (const [k, v] of Object.entries({ CLIENT_ID: oidc.clientId, REDIRECT_URI: oidc.redirectUri })) {
+        if (!v) { console.error(`SSO configured but DSH_TEAMS_OIDC_${k} is missing`); process.exit(1) }
+      }
+      if (!oidc.allowedDomains.length && !oidc.allowedEmails.length) {
+        console.error('SSO refuses to start without an allowlist: set DSH_TEAMS_OIDC_ALLOWED_DOMAINS or _ALLOWED_EMAILS,')
+        console.error('otherwise ANY account at your identity provider could sign in.')
+        process.exit(1)
+      }
+    }
+    await startGateway({ port, host, upstreamHost, upstreamPort, usersPath: USERS_PATH, secret: loadSecret(), oidc })
     console.log(`dsh-teams gateway on http://${host}:${port} -> dsh at ${upstreamHost}:${upstreamPort}`)
     console.log(`users: ${users.list().join(', ')}  (store: ${USERS_PATH})`)
     break
@@ -78,5 +97,14 @@ usage:
   dsh-teams remove-user <name>
   dsh-teams list-users
 
-env: DSH_TEAMS_PORT, DSH_TEAMS_HOST, DSH_UPSTREAM_HOST, DSH_UPSTREAM_PORT, DSH_TEAMS_HOME`)
+env: DSH_TEAMS_PORT, DSH_TEAMS_HOST, DSH_UPSTREAM_HOST, DSH_UPSTREAM_PORT, DSH_TEAMS_HOME
+
+SSO (OIDC — Google Workspace, Okta, Azure AD, Auth0):
+  DSH_TEAMS_OIDC_ISSUER           https://accounts.google.com
+  DSH_TEAMS_OIDC_CLIENT_ID        required
+  DSH_TEAMS_OIDC_CLIENT_SECRET    omit for public clients (PKCE only)
+  DSH_TEAMS_OIDC_REDIRECT_URI     https://your.host/__teams/sso/callback
+  DSH_TEAMS_OIDC_ALLOWED_DOMAINS  corp.example,sub.corp.example   <- required
+  DSH_TEAMS_OIDC_ALLOWED_EMAILS   alice@corp.example,...          <- or this
+  DSH_TEAMS_OIDC_LABEL            button text, e.g. "Google"`)
 }

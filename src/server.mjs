@@ -3,7 +3,10 @@
 import { createServer, request as httpRequest } from 'node:http'
 import { connect } from 'node:net'
 import { UserStore, SessionStore, LoginRateLimit, parseCookies } from './auth.mjs'
+import { pkce, discover, fetchJwks, authorizeUrl, exchangeCode, verifyIdToken, authorizeIdentity } from './oidc.mjs'
 
+import { randomBytes } from 'node:crypto'
+const randomToken = () => randomBytes(24).toString('base64url')
 const COOKIE_NAME = 'dsh_teams_session'
 /**
  * Paths served before auth. Browsers fetch the PWA manifest WITHOUT cookies
@@ -18,6 +21,7 @@ const HOP_BY_HOP = new Set([
   'te', 'trailer', 'transfer-encoding', 'upgrade',
 ])
 
+let SSO_BUTTON = ''
 const LOGIN_PAGE = (error) => `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>dsh-teams login</title>
@@ -27,6 +31,8 @@ const LOGIN_PAGE = (error) => `<!doctype html>
   h1{font-size:1.1rem;margin:0 0 1rem}
   input{display:block;width:100%;box-sizing:border-box;margin:.5rem 0;padding:.5rem;border-radius:6px;border:1px solid #30363d;background:#0d1117;color:inherit}
   button{width:100%;padding:.5rem;margin-top:.5rem;border-radius:6px;border:0;background:#238636;color:#fff;font-weight:600;cursor:pointer}
+  .sso{display:block;text-align:center;margin-top:1rem;padding:.5rem;border-radius:6px;border:1px solid #30363d;color:#e6edf3;text-decoration:none}
+  .or{text-align:center;color:#8b949e;font-size:.8rem;margin:.75rem 0 0}
   .err{color:#f85149;font-size:.85rem;min-height:1.2em}
 </style></head>
 <body><form method="post" action="/__teams/login">
@@ -35,10 +41,15 @@ const LOGIN_PAGE = (error) => `<!doctype html>
 <input name="user" placeholder="username" autocomplete="username" required>
 <input name="password" type="password" placeholder="password" autocomplete="current-password" required>
 <button>Sign in</button>
+${SSO_BUTTON}
 </form></body></html>`
 
 export function startGateway(config) {
-  const { port, host, upstreamHost, upstreamPort, usersPath, secret } = config
+  const { port, host, upstreamHost, upstreamPort, usersPath, secret, oidc } = config
+  if (oidc?.issuer) SSO_BUTTON = `<p class="or">or</p><a class="sso" href="/__teams/sso/login">Sign in with ${oidc.label ?? 'SSO'}</a>`
+  // state -> { verifier, nonce, expiresAt }; single-use, short-lived.
+  const pending = new Map()
+  let discovered, jwksCache
   const users = new UserStore(usersPath)
   const sessions = new SessionStore(secret)
   const rateLimit = new LoginRateLimit()
@@ -51,6 +62,8 @@ export function startGateway(config) {
     if (url.pathname === '/__teams/login' && req.method === 'POST') {
       return handleLogin(req, res)
     }
+    if (url.pathname === '/__teams/sso/login') return handleSsoStart(req, res)
+    if (url.pathname === '/__teams/sso/callback') return handleSsoCallback(req, res, url)
     if (url.pathname === '/__teams/logout') {
       sessions.destroy(parseCookies(req.headers.cookie)[COOKIE_NAME])
       res.writeHead(302, { 'set-cookie': `${COOKIE_NAME}=; Max-Age=0; Path=/`, location: '/' })
@@ -101,6 +114,67 @@ export function startGateway(config) {
       res.writeHead(401, { 'content-type': 'text/html; charset=utf-8' })
       res.end(LOGIN_PAGE('Invalid username or password.'))
     })
+  }
+
+  async function oidcConfig() {
+    if (!oidc?.issuer) throw new Error('SSO is not configured')
+    discovered ??= await discover(oidc.issuer)
+    jwksCache ??= await fetchJwks(discovered.jwks_uri)
+    return { doc: discovered, jwks: jwksCache }
+  }
+
+  function ssoError(res, code, message) {
+    res.writeHead(code, { 'content-type': 'text/html; charset=utf-8' })
+    res.end(LOGIN_PAGE(`SSO failed: ${message}`))
+  }
+
+  async function handleSsoStart(req, res) {
+    try {
+      const { doc } = await oidcConfig()
+      const { verifier, challenge } = pkce()
+      const state = randomToken()
+      const nonce = randomToken()
+      // Bound lifetime: an unused state must not sit around forever.
+      pending.set(state, { verifier, nonce, expiresAt: Date.now() + 10 * 60 * 1000 })
+      for (const [k, v] of pending) if (v.expiresAt < Date.now()) pending.delete(k)
+      res.writeHead(302, { location: authorizeUrl(doc, {
+        clientId: oidc.clientId, redirectUri: oidc.redirectUri, state, nonce, challenge,
+        ...(oidc.scope ? { scope: oidc.scope } : {}),
+      }) })
+      res.end()
+    } catch (e) { ssoError(res, 500, e.message) }
+  }
+
+  async function handleSsoCallback(req, res, url) {
+    try {
+      const state = url.searchParams.get('state') ?? ''
+      const entry = pending.get(state)
+      pending.delete(state) // single use, always
+      if (!entry || entry.expiresAt < Date.now()) return ssoError(res, 400, 'invalid or expired state')
+      if (url.searchParams.get('error')) return ssoError(res, 400, url.searchParams.get('error'))
+      const code = url.searchParams.get('code')
+      if (!code) return ssoError(res, 400, 'no authorization code')
+
+      const { doc, jwks } = await oidcConfig()
+      const tokens = await exchangeCode(doc, {
+        code, clientId: oidc.clientId, clientSecret: oidc.clientSecret,
+        redirectUri: oidc.redirectUri, verifier: entry.verifier,
+      })
+      const claims = verifyIdToken(tokens.id_token, {
+        jwks, issuer: doc.issuer, clientId: oidc.clientId, nonce: entry.nonce,
+      })
+      const decision = authorizeIdentity(claims, {
+        allowedDomains: oidc.allowedDomains ?? [], allowedEmails: oidc.allowedEmails ?? [],
+      })
+      if (!decision.ok) return ssoError(res, 403, decision.reason)
+
+      const cookie = sessions.create(decision.email)
+      res.writeHead(302, {
+        'set-cookie': `${COOKIE_NAME}=${cookie}; HttpOnly; SameSite=Lax; Path=/`,
+        location: '/',
+      })
+      res.end()
+    } catch (e) { ssoError(res, 401, e.message) }
   }
 
   function upstreamHeaders(req, user) {
