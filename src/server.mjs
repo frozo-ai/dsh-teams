@@ -58,13 +58,13 @@ export function startGateway(config) {
     proxyHttp(req, res, user)
   })
 
-  server.on('upgrade', (req, socket) => {
+  server.on('upgrade', (req, socket, head) => {
     const user = authedUser(req)
     if (!user) {
       socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
       return socket.destroy()
     }
-    proxyUpgrade(req, socket)
+    proxyUpgrade(req, socket, head)
   })
 
   function handleLogin(req, res) {
@@ -146,13 +146,24 @@ export function startGateway(config) {
     req.pipe(upstream)
   }
 
-  function proxyUpgrade(req, socket) {
+  function proxyUpgrade(req, socket, head) {
     const upstream = connect(upstreamPort, upstreamHost, () => {
-      let head = `${req.method} ${req.url} HTTP/1.1\r\n`
+      // Same CSRF trap as the HTTP path: dsh 403s any request carrying Origin,
+      // which kills the /api/events.mux WebSocket. Losing it puts the client in
+      // an endless "connection lost, retry #N" loop and crashes the composer
+      // slot on unmount. Upgrade/Connection MUST survive -- they are the
+      // handshake itself.
+      let raw = `${req.method} ${req.url} HTTP/1.1\r\n`
       for (let i = 0; i < req.rawHeaders.length; i += 2) {
-        head += `${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}\r\n`
+        const lower = req.rawHeaders[i].toLowerCase()
+        if (lower === 'origin' || lower === 'referer' || lower === 'host') continue
+        raw += `${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}\r\n`
       }
-      upstream.write(head + '\r\n')
+      raw += `Host: ${upstreamHost}:${upstreamPort}\r\n`
+      raw += `X-Forwarded-Host: ${req.headers.host ?? ''}\r\n`
+      upstream.write(raw + '\r\n')
+      // Bytes node already read past the headers must not be dropped.
+      if (head?.length) upstream.write(head)
       socket.pipe(upstream)
       upstream.pipe(socket)
     })
