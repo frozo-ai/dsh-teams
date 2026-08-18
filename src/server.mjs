@@ -5,6 +5,13 @@ import { connect } from 'node:net'
 import { UserStore, SessionStore, LoginRateLimit, parseCookies } from './auth.mjs'
 
 const COOKIE_NAME = 'dsh_teams_session'
+/**
+ * Paths served before auth. Browsers fetch the PWA manifest WITHOUT cookies
+ * (it needs crossorigin="use-credentials" to send them), so gating it produces
+ * a permanent 401 in the console. These carry app metadata only -- no session
+ * data, no user content.
+ */
+const PUBLIC_PATHS = new Set(['/manifest.webmanifest', '/favicon.ico', '/robots.txt'])
 // Hop-by-hop headers must not be forwarded (RFC 9110 §7.6.1).
 const HOP_BY_HOP = new Set([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
@@ -49,6 +56,8 @@ export function startGateway(config) {
       res.writeHead(302, { 'set-cookie': `${COOKIE_NAME}=; Max-Age=0; Path=/`, location: '/' })
       return res.end()
     }
+
+    if (PUBLIC_PATHS.has(url.pathname)) return proxyHttp(req, res, 'anonymous')
 
     const user = authedUser(req)
     if (!user) {

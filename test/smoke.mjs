@@ -102,6 +102,14 @@ assert.ok(api.ok)
 assert.match(api.host, /^127\.0\.0\.1:/, 'Host must be rewritten to the upstream')
 assert.equal(api.fwd, new URL(base).host, 'original host preserved as x-forwarded-host')
 
+// 4d. The PWA manifest must be reachable WITHOUT a cookie -- browsers fetch it
+// uncredentialed, so gating it yields a permanent console 401.
+res = await fetch(base + '/manifest.webmanifest')
+assert.equal(res.status, 200, 'manifest must not require auth')
+// ...but real content still must.
+res = await fetch(base + '/some/private/path')
+assert.equal(res.status, 401, 'non-public paths still gated')
+
 // 5. Tampered cookie -> 401
 res = await fetch(base + '/', { headers: { cookie: cookie.slice(0, -4) + 'beef' } })
 assert.equal(res.status, 401)
